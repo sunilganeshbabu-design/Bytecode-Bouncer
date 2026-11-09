@@ -1,0 +1,89 @@
+{
+  "name": "Bytecode Bouncer - IPv4 Packet Inspector",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "bytecode-bouncer",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "165a728d-7606-48ee-9c05-da65c1227ea4",
+      "name": "Packet Inspection Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "bytecode-bouncer-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Bytecode Bouncer - IPv4 packet parser and rule engine\n// POST JSON to the Webhook with packetHex, allowedProtocols, blockedPorts, blockedIPs.\n\nconst input = $input.first().json;\nconst body = input.body ?? input;\n\nfunction reject(message) {\n  return [{ json: { status: \"REJECT\", reason: message, packet: null } }];\n}\n\nconst hexText = String(body.packetHex ?? \"\").replace(/0x/gi, \"\").replace(/[\\s:]/g, \"\");\nif (!hexText || !/^[0-9a-f]+$/i.test(hexText) || hexText.length % 2 !== 0) {\n  return reject(\"Provide packetHex as an even-length hexadecimal string.\");\n}\n\nconst bytes = Buffer.from(hexText, \"hex\");\nif (bytes.length < 20) return reject(\"Packet is too short for an IPv4 header.\");\n\nconst version = bytes[0] >> 4;\nconst ihl = (bytes[0] & 0x0f) * 4;\nif (version !== 4) return reject(\"Only IPv4 packets are supported.\");\nif (ihl < 20 || bytes.length < ihl) return reject(\"Invalid IPv4 header length.\");\n\nconst totalLength = bytes.readUInt16BE(2);\nif (totalLength < ihl || totalLength > bytes.length) {\n  return reject(\"IPv4 total length is inconsistent with supplied bytes.\");\n}\n\nconst protocolNumber = bytes[9];\nconst protocolNames = { 1: \"ICMP\", 6: \"TCP\", 17: \"UDP\" };\nconst protocol = protocolNames[protocolNumber] ?? `UNKNOWN_${protocolNumber}`;\nconst ip = (offset) => [...bytes.subarray(offset, offset + 4)].join(\".\");\nconst sourceIP = ip(12);\nconst destinationIP = ip(16);\nconst ttl = bytes[8];\n\nlet sourcePort = null;\nlet destinationPort = null;\nif (protocolNumber === 6 || protocolNumber === 17) {\n  const minHeader = protocolNumber === 6 ? 20 : 8;\n  if (totalLength < ihl + minHeader) return reject(\"Packet is too short for its TCP/UDP header.\");\n  sourcePort = bytes.readUInt16BE(ihl);\n  destinationPort = bytes.readUInt16BE(ihl + 2);\n}\n\nconst allowedProtocols = Array.isArray(body.allowedProtocols)\n  ? body.allowedProtocols.map(x => String(x).toUpperCase())\n  : [\"TCP\", \"UDP\", \"ICMP\"];\nconst blockedPorts = Array.isArray(body.blockedPorts)\n  ? body.blockedPorts.map(Number)\n  : [23, 445];\nconst blockedIPs = Array.isArray(body.blockedIPs)\n  ? body.blockedIPs.map(String)\n  : [];\n\nconst packet = {\n  version,\n  headerLengthBytes: ihl,\n  totalLengthBytes: totalLength,\n  packetBytesReceived: bytes.length,\n  ttl,\n  protocol,\n  sourceIP,\n  destinationIP,\n  sourcePort,\n  destinationPort\n};\n\nlet status = \"ALLOW\";\nlet reason = \"Packet passed all configured filtering rules.\";\n\nif (blockedIPs.includes(sourceIP) || blockedIPs.includes(destinationIP)) {\n  status = \"BLOCK\";\n  reason = \"Source or destination IP is in the blocked IP list.\";\n} else if (!allowedProtocols.includes(protocol)) {\n  status = \"BLOCK\";\n  reason = \"Protocol is not enabled in the filtering policy.\";\n} else if (\n  (sourcePort !== null && blockedPorts.includes(sourcePort)) ||\n  (destinationPort !== null && blockedPorts.includes(destinationPort))\n) {\n  status = \"BLOCK\";\n  reason = \"Source or destination port is blocked.\";\n}\n\nreturn [{\n  json: {\n    status,\n    reason,\n    packet,\n    inspectedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "923ef07b-7314-4454-8e7e-803f27b74836",
+      "name": "Parse IPv4 and Apply Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "c9bff282-0d9a-4c63-a74d-c69df6b17112",
+      "name": "Return Inspection Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        544,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Packet Inspection Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse IPv4 and Apply Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse IPv4 and Apply Rules": {
+      "main": [
+        [
+          {
+            "node": "Return Inspection Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "078dac89-b090-4231-aabb-2796f14c0bdf",
+  "meta": {
+    "instanceId": "ee9404657905b46d90cc7e4e0f81a9706fada9671069e3c5233dba85ccebfdce"
+  },
+  "nodeGroups": [],
+  "id": "xowEJnWBj1Gl1k0J",
+  "tags": []
+}
